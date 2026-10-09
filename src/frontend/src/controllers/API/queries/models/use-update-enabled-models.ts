@@ -26,7 +26,7 @@ export const useUpdateEnabledModels: useMutationFunctionType<
   UpdateEnabledModelsResponse,
   Error
 > = (options?) => {
-  const { mutate } = UseRequestProcessor();
+  const { mutate, queryClient } = UseRequestProcessor();
 
   const updateEnabledModelsFn = async ({
     updates,
@@ -50,7 +50,12 @@ export const useUpdateEnabledModels: useMutationFunctionType<
     UpdateEnabledModelsResponse,
     Error,
     { updates: ModelStatusUpdate[] } & ProviderScopeParams
-  > = mutate(["useUpdateEnabledModels"], updateEnabledModelsFn, options);
+  > = mutate(["useUpdateEnabledModels"], updateEnabledModelsFn, {
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["useGetEnabledModels"] });
+    },
+    ...options,
+  });
 
   return mutation;
 };

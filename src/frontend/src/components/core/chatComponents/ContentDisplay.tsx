@@ -1,5 +1,6 @@
 import { ChevronDown } from "lucide-react";
-import { Fragment, type ReactNode, useState } from "react";
+import { Fragment, type ReactNode, useId, useState } from "react";
+import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
 import rehypeMathjax from "rehype-mathjax/browser";
 import remarkGfm from "remark-gfm";
@@ -248,7 +249,11 @@ export default function ContentDisplay({
 
     case "reasoning":
       contentData = (
-        <ReasoningDisplay text={content.text} duration={content.duration} />
+        <ReasoningDisplay
+          text={content.text}
+          duration={content.duration}
+          contentId={chatId}
+        />
       );
       break;
 
@@ -362,28 +367,65 @@ function ToolInputDisplay({ input }: { input: Record<string, JSONValue> }) {
 }
 
 /** Reasoning section. Live shimmer while streaming, collapsible summary once
- * the producer attaches a `duration` (its signal that the step is done). */
+ * the producer attaches a `duration` (its signal that the step is done).
+ *
+ * Accessibility:
+ * - The streaming indicator lives inside an `aria-live="polite"` region so the
+ *   user is told the model is still working, but the live region is empty when
+ *   the streamed text is empty (prevents announcing nothing).
+ * - The disclosure is a real <button> with `aria-expanded`/`aria-controls` so
+ *   keyboard and screen-reader users can toggle it predictably. Completed
+ *   reasoning is collapsed by default and only revealed when the user opts in.
+ * - The body element carries a stable id; the test harness and the disclosure
+ *   reference the same id so the relationship is verifiable end-to-end.
+ * - Empty completed reasoning (text === "" with a duration) is suppressed: a
+ *   finished step with nothing to read must not surface a misleading
+ *   "Thought for 0s" disclosure that would expand to nothing.
+ * - Labels go through the i18n system (`reasoning.thinking`,
+ *   `reasoning.thoughtFor`) so the screen-reader announcement and the visible
+ *   text stay in lock-step across locales.
+ */
 function ReasoningDisplay({
   text,
   duration,
+  contentId,
 }: {
   text: string;
   duration?: number;
+  contentId?: string;
 }) {
+  const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const isStreaming = duration === undefined;
+  // Stable id shared by the disclosure button and the collapsible body so
+  // `aria-controls` resolves to a real element even when the disclosure is
+  // rendered outside a parent that provides an id.
+  const generatedId = useId();
+  const bodyId = contentId
+    ? `${contentId}-reasoning`
+    : `reasoning-${generatedId}`;
 
   if (isStreaming) {
     return (
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <div
+        className="flex items-center gap-1.5 text-xs text-muted-foreground"
+        aria-live="polite"
+      >
         <ForwardedIconComponent
           name="Sparkles"
           className="h-3 w-3"
           aria-hidden
         />
-        <span className="animate-pulse">Thinking…</span>
+        <span className="animate-pulse">{t("reasoning.thinking")}</span>
       </div>
     );
+  }
+
+  // Suppress the empty completed-reasoning case: a finished step with no
+  // displayable text is either a token-count-only response or a streaming
+  // signal that should never render a clickable "Thought for 0s" disclosure.
+  if (text.trim() === "") {
+    return null;
   }
 
   return (
@@ -391,6 +433,8 @@ function ReasoningDisplay({
       <button
         type="button"
         onClick={() => setIsOpen((prev) => !prev)}
+        aria-expanded={isOpen}
+        aria-controls={bodyId}
         className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground w-fit"
       >
         <ForwardedIconComponent
@@ -398,13 +442,19 @@ function ReasoningDisplay({
           className="h-3 w-3"
           aria-hidden
         />
-        <span>Thought for {formatSeconds(duration)}</span>
+        <span>
+          {t("reasoning.thoughtFor", { duration: formatSeconds(duration) })}
+        </span>
         <ChevronDown
           className={`h-3 w-3 transition-transform ${isOpen ? "rotate-180" : ""}`}
         />
       </button>
       {isOpen && (
-        <div className="ml-1 pl-3 text-xs text-muted-foreground whitespace-pre-wrap border-l-2 border-muted-foreground/20 italic">
+        <div
+          id={bodyId}
+          data-testid="reasoning-body"
+          className="ml-1 pl-3 text-xs text-muted-foreground whitespace-pre-wrap border-l-2 border-muted-foreground/20 italic"
+        >
           {text}
         </div>
       )}

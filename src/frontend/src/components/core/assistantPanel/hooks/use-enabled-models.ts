@@ -7,6 +7,7 @@ import type { AssistantModel } from "../assistant-panel.types";
 
 interface FilteredProvider {
   provider: string;
+  displayName: string;
   icon: string;
   models: Array<{ model_name: string }>;
 }
@@ -54,6 +55,7 @@ export function useEnabledModels(): UseEnabledModelsReturn {
       .map((provider) => {
         return {
           provider: provider.provider,
+          displayName: provider.display_name || provider.provider,
           icon: provider.icon || "Bot",
           models: provider.models.filter(
             (model) =>

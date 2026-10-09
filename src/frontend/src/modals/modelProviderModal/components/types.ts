@@ -9,6 +9,8 @@ export type Model = {
 /** Represents a model provider (e.g., OpenAI, Anthropic) */
 export type Provider = {
   provider: string;
+  display_name?: string;
+  custom_provider?: boolean;
   icon?: string;
   is_enabled: boolean;
   is_configured?: boolean;

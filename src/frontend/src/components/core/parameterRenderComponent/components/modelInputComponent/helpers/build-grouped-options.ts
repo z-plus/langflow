@@ -53,6 +53,12 @@ export function buildGroupedOptions({
 }: BuildGroupedOptionsParams): Record<string, ModelOption[]> {
   const grouped: Record<string, ModelOption[]> = {};
   const seen = new Set<string>();
+  const providerDisplayNames = new Map(
+    (providers ?? []).map((provider) => [
+      canonicalProviderName(provider.provider),
+      provider.display_name || provider.provider,
+    ]),
+  );
   const authorizedProviders = new Set(
     providerStatusIsReliable
       ? (providers ?? []).map((provider) =>
@@ -107,10 +113,12 @@ export function buildGroupedOptions({
       continue;
     }
 
-    if (!grouped[provider]) {
-      grouped[provider] = [];
+    const providerDisplayName =
+      providerDisplayNames.get(providerIdentity) || provider;
+    if (!grouped[providerDisplayName]) {
+      grouped[providerDisplayName] = [];
     }
-    grouped[provider].push(option);
+    grouped[providerDisplayName].push(option);
     seen.add(`${providerIdentity}::${option.name}`);
   }
 
@@ -118,6 +126,7 @@ export function buildGroupedOptions({
     for (const providerInfo of providers) {
       const providerName = providerInfo.provider;
       const providerIdentity = canonicalProviderName(providerName);
+      const providerDisplayName = providerInfo.display_name || providerName;
       if (disconnectedProviders.has(providerIdentity)) continue;
       const providerModels =
         enabledModels[providerName] ?? enabledModels[providerIdentity];
@@ -142,10 +151,10 @@ export function buildGroupedOptions({
         if (seen.has(key)) continue;
         seen.add(key);
 
-        if (!grouped[providerName]) {
-          grouped[providerName] = [];
+        if (!grouped[providerDisplayName]) {
+          grouped[providerDisplayName] = [];
         }
-        grouped[providerName].push({
+        grouped[providerDisplayName].push({
           name: modelName,
           icon: providerInfo.icon || "Bot",
           provider: providerName,
@@ -185,8 +194,12 @@ export function buildGroupedOptions({
     savedInRegistry;
   if (shouldInjectSaved && savedValue) {
     const providerName = savedValue.provider || "Unknown";
-    grouped[providerName] = grouped[providerName] ?? [];
-    grouped[providerName].push({
+    const providerDisplayName =
+      providerDisplayNames.get(canonicalProviderName(providerName)) ||
+      (savedValue.metadata?.provider_display_name as string | undefined) ||
+      providerName;
+    grouped[providerDisplayName] = grouped[providerDisplayName] ?? [];
+    grouped[providerDisplayName].push({
       ...(savedValue.id && { id: savedValue.id }),
       name: savedValue.name,
       icon: savedValue.icon || "Bot",

@@ -11,6 +11,7 @@ import { UseRequestProcessor } from "../../services/request-processor";
 
 export interface ModelProviderInfo {
   provider: string;
+  display_name?: string;
   models: Array<{
     model_name: string;
     metadata: Record<string, unknown>;
@@ -23,6 +24,7 @@ export interface ModelProviderInfo {
   /** True when the model list is discovered from the provider's endpoint
    *  after credentials are configured (e.g. IBM WatsonX, OpenRouter, vLLM). */
   live_discovery?: boolean;
+  custom_provider?: boolean;
 }
 
 export interface ModelProviderWithStatus extends ModelProviderInfo {

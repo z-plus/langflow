@@ -46,7 +46,7 @@ const ProviderListItem = ({
               !isActive && "text-muted-foreground",
             )}
           >
-            {provider.provider}
+            {provider.display_name || provider.provider}
           </span>
           {provider.model_count !== undefined && isActive && (
             <Badge

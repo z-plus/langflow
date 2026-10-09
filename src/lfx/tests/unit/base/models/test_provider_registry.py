@@ -175,6 +175,12 @@ def test_resolve_provider_id_accepts_names_ids_aliases_and_legacy_unknowns():
     assert resolve_provider_id("Legacy Custom Provider") == "legacy-custom-provider"
 
 
+def test_resolve_provider_id_preserves_canonical_custom_provider_identity():
+    provider_id = "custom-openai-compatible:00000000-0000-0000-0000-000000000001"
+    assert resolve_provider_id(provider_id) == provider_id
+    assert resolve_provider_id(provider_id.upper()) != provider_id
+
+
 def test_resolve_provider_id_uses_opaque_fallback_for_non_sluggable_legacy_selectors():
     provider_id = resolve_provider_id(" Δ ")
 

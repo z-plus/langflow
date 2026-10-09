@@ -32,7 +32,7 @@ from pydantic import TypeAdapter
 from lfx.base.prompts.utils import dict_values_to_string
 from lfx.log.logger import logger
 from lfx.schema.content_block import ContentBlock, ContentType
-from lfx.schema.content_types import ErrorContent, TextContent
+from lfx.schema.content_types import ErrorContent, ReasoningContent, TextContent, ToolContent
 from lfx.schema.data import Data
 from lfx.schema.image import Image, get_file_paths, is_image_file
 from lfx.schema.legacy_render import legacy_text, render_v1_content_blocks
@@ -366,7 +366,15 @@ class Message(Data):
                 return HumanMessage(content=contents)
             return HumanMessage(content=text)
 
-        return AIMessage(content=text)
+        replay_data: dict[str, Any] = {}
+        tool_calls = []
+        for block in self.content_blocks:
+            if isinstance(block, ReasoningContent) and isinstance(block.provider_data, dict):
+                replay_data.update(block.provider_data)
+            elif isinstance(block, ToolContent) and block.name and block.id and block.output is None:
+                tool_calls.append({"name": block.name, "args": block.tool_input, "id": block.id, "type": "tool_call"})
+        additional_kwargs = {"reasoning_provider_data": replay_data} if replay_data else {}
+        return AIMessage(content=text, additional_kwargs=additional_kwargs, tool_calls=tool_calls)
 
     @classmethod
     def from_lc_message(cls, lc_message: BaseMessage) -> Message:
@@ -386,9 +394,16 @@ class Message(Data):
             sender = lc_message.type
             sender_name = lc_message.type
 
-        from lfx.schema.content_types import ImageContent, ToolContent
+        from lfx.base.models.reasoning_normalization import normalize_reasoning_content
+        from lfx.schema.content_types import ImageContent
 
         blocks: list[Any] = []
+        if lc_message.type == "ai":
+            replay_data = getattr(lc_message, "additional_kwargs", {}).get("reasoning_provider_data")
+            reasoning_events = normalize_reasoning_content(lc_message)
+            reasoning_text = "".join(event.text for event in reasoning_events if event.kind == "reasoning")
+            if reasoning_text or replay_data:
+                blocks.append(ReasoningContent(text=reasoning_text, provider_data=replay_data))
         content = lc_message.content
         if isinstance(content, str):
             if content:

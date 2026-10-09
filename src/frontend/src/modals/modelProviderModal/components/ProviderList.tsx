@@ -12,7 +12,7 @@ export interface ProviderListProps extends ProviderScopeParams {
   modelType: ModelTypeFilter;
   onProviderSelect?: (provider: Provider) => void;
   selectedProviderName?: string | null;
-  /** Case-insensitive substring filter applied to the provider name. */
+  /** Case-insensitive substring filter applied to the provider display name. */
   query?: string;
 }
 
@@ -46,7 +46,9 @@ const ProviderList = ({
       providerName.toLowerCase().includes(trimmedQuery);
 
     return rawProviders
-      .filter((provider) => matchesQuery(provider.provider))
+      .filter((provider) =>
+        matchesQuery(provider.display_name || provider.provider),
+      )
       .map((provider) => {
         const matchingModels =
           provider?.models?.filter((model) =>
@@ -57,6 +59,8 @@ const ProviderList = ({
 
         return {
           provider: provider.provider,
+          display_name: provider.display_name,
+          custom_provider: provider.custom_provider,
           icon: provider.icon,
           is_enabled: provider.is_enabled,
           is_configured: provider.is_configured,

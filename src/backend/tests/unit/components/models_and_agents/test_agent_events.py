@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from langchain_core.agents import AgentFinish
@@ -15,7 +15,7 @@ from lfx.base.agents.events import (
     handle_on_tool_start,
     process_agent_events,
 )
-from lfx.schema.content_types import ToolContent
+from lfx.schema.content_types import ReasoningContent, TextContent, ToolContent
 from lfx.schema.message import Message
 from lfx.utils.constants import MESSAGE_SENDER_AI
 
@@ -1346,3 +1346,66 @@ async def test_chat_model_end_parallel_same_tool_keeps_order():
     assert result.content_blocks[0].output == "result a"
     assert result.content_blocks[1].tool_input == {"url": "b"}
     assert result.content_blocks[1].output == "result b"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_streams_separately_and_survives_multiple_tool_rounds():
+    send_message = create_mock_send_message()
+    token_callback = Mock()
+    round1_replay = {"reasoning_details": [{"type": "reasoning.text", "text": "find data"}]}
+    round2_replay = {"reasoning_content": "compose answer"}
+    round1_chunk = AIMessageChunk(
+        content="",
+        additional_kwargs={"reasoning_content": "find data", "reasoning_provider_data": round1_replay},
+    )
+    round2_reasoning = AIMessageChunk(
+        content="",
+        additional_kwargs={"reasoning_content": "compose answer", "reasoning_provider_data": round2_replay},
+    )
+    round2_answer = AIMessageChunk(content="final answer")
+    round1 = AIMessage(
+        content=[{"type": "tool_use", "name": "lookup", "input": {"q": "x"}, "id": "call-1"}],
+        additional_kwargs={"reasoning_content": "find data", "reasoning_provider_data": round1_replay},
+    )
+    round2 = AIMessage(
+        content="final answer",
+        additional_kwargs={"reasoning_content": "compose answer", "reasoning_provider_data": round2_replay},
+    )
+    events = [
+        {"event": "on_chat_model_stream", "run_id": "model-1", "data": {"chunk": round1_chunk}},
+        {"event": "on_chat_model_end", "run_id": "model-1", "data": {"output": round1}},
+        {"event": "on_tool_start", "name": "lookup", "run_id": "tool-1", "data": {"input": {"q": "x"}}},
+        {"event": "on_tool_end", "name": "lookup", "run_id": "tool-1", "data": {"output": "result"}},
+        {"event": "on_chat_model_stream", "run_id": "model-2", "data": {"chunk": round2_reasoning}},
+        {"event": "on_chat_model_stream", "run_id": "model-2", "data": {"chunk": round2_answer}},
+        {"event": "on_chat_model_end", "run_id": "model-2", "data": {"output": round2}},
+        {"event": "on_chain_end", "data": {"output": AgentFinish(return_values={"output": "final answer"}, log="")}},
+    ]
+    agent_message = Message(
+        sender=MESSAGE_SENDER_AI,
+        sender_name="Agent",
+        properties={"icon": "Bot", "state": "partial"},
+        content_blocks=[],
+        session_id="s",
+    )
+
+    result = await process_agent_events(
+        create_event_iterator(events),
+        agent_message,
+        send_message,
+        token_callback,
+    )
+
+    assert [type(block) for block in result.content_blocks] == [
+        ReasoningContent,
+        ToolContent,
+        ReasoningContent,
+        TextContent,
+    ]
+    assert result.content_blocks[0].text == "find data"
+    assert result.content_blocks[0].provider_data == round1_replay
+    assert result.content_blocks[1].output == "result"
+    assert result.content_blocks[2].text == "compose answer"
+    assert result.content_blocks[2].provider_data == round2_replay
+    assert result.content_blocks[3].text == "final answer"
+    assert [call.kwargs["data"]["chunk"] for call in token_callback.call_args_list] == ["final answer"]

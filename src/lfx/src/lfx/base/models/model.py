@@ -332,7 +332,7 @@ class LCModelComponent(Component):
             return lf_message
 
         # Create message with usage data if available
-        msg = Message(text=result)
+        msg = Message.from_lc_message(message) if isinstance(message, AIMessage) else Message(text=result)
         if usage_data:
             msg.properties.usage = usage_data
         return msg

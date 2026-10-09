@@ -29,7 +29,12 @@ jest.mock("@/modals/modelProviderModal", () => {
   };
 });
 
-let mockFilteredProviders = [
+let mockFilteredProviders: Array<{
+  provider: string;
+  displayName?: string;
+  icon: string;
+  models: Array<{ model_name: string }>;
+}> = [
   {
     provider: "Anthropic",
     icon: "Anthropic",
@@ -304,7 +309,7 @@ describe("ModelSelector", () => {
   });
 
   describe("stale model from localStorage", () => {
-    it("should_auto_select_first_available_model_when_selected_provider_is_no_longer_available", () => {
+    it("keeps a selection whose provider was deleted and marks it unavailable", () => {
       // Arrange — only Anthropic is configured, but selectedModel is a stale OpenAI model from localStorage
       mockFilteredProviders = [
         {
@@ -334,16 +339,13 @@ describe("ModelSelector", () => {
         />,
       );
 
-      // Assert — onModelChange should have been called with the first available model (Anthropic)
-      expect(onModelChange).toHaveBeenCalledWith(
-        expect.objectContaining({
-          provider: "Anthropic",
-          name: "claude-sonnet-4-20250514",
-        }),
+      expect(onModelChange).not.toHaveBeenCalled();
+      expect(screen.getByTestId("assistant-model-selector")).toHaveTextContent(
+        "gpt-5.4(model.unavailable)",
       );
     });
 
-    it("should_auto_select_first_available_model_when_selected_model_is_no_longer_in_provider", () => {
+    it("keeps a model that is no longer returned by its provider", () => {
       // Arrange — OpenAI is configured, but the specific model no longer exists
       mockFilteredProviders = [
         {
@@ -370,13 +372,36 @@ describe("ModelSelector", () => {
         />,
       );
 
-      // Assert — onModelChange should have been called with a valid model
-      expect(onModelChange).toHaveBeenCalledWith(
-        expect.objectContaining({
-          provider: "OpenAI",
-          name: "gpt-4o",
-        }),
+      expect(onModelChange).not.toHaveBeenCalled();
+      expect(screen.getByTestId("assistant-model-selector")).toHaveTextContent(
+        "gpt-5.4(model.unavailable)",
       );
     });
+  });
+
+  it("shows a custom provider display name but selects its stable identity", async () => {
+    mockFilteredProviders = [
+      {
+        provider: "custom-openai-compatible:provider-id",
+        displayName: "公司网关",
+        icon: "Plug",
+        models: [{ model_name: "shared-model" }],
+      },
+    ];
+    const onModelChange = jest.fn();
+
+    render(
+      <ModelSelector selectedModel={null} onModelChange={onModelChange} />,
+    );
+    await userEvent.click(screen.getByTestId("assistant-model-selector"));
+
+    expect(screen.getByText("公司网关")).toBeInTheDocument();
+    await userEvent.click(screen.getAllByText("shared-model")[1]);
+    expect(onModelChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        provider: "custom-openai-compatible:provider-id",
+        name: "shared-model",
+      }),
+    );
   });
 });

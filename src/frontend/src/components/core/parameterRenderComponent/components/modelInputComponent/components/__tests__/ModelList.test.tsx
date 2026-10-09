@@ -205,6 +205,25 @@ describe("ModelList — selecting an option", () => {
 
     expect(onSelect).toHaveBeenCalledWith("gpt-4", "OpenAI");
   });
+
+  it("uses the stable provider identity when the group heading is a display name", async () => {
+    const user = userEvent.setup();
+    const onSelect = jest.fn();
+    const provider = "custom-openai-compatible:provider-1";
+    renderList({
+      groupedOptions: {
+        utenet: [{ ...gpt4, provider }],
+      },
+      selectedModel: null,
+      onSelect,
+    });
+
+    await user.click(
+      screen.getByTestId(getModelOptionTestId("utenet", "gpt-4")),
+    );
+
+    expect(onSelect).toHaveBeenCalledWith("gpt-4", provider);
+  });
 });
 
 describe("ModelList — position announcement", () => {

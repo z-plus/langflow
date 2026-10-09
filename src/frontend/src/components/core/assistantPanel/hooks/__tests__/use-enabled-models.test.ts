@@ -31,6 +31,7 @@ jest.mock("@/stores/flowsManagerStore", () => ({
 const providers = [
   {
     provider: "OpenAI",
+    display_name: "OpenAI Models",
     icon: "OpenAI",
     is_enabled: true,
     models: [
@@ -90,6 +91,7 @@ describe("useEnabledModels", () => {
     expect(result.current.filteredProviders).toEqual([
       expect.objectContaining({
         provider: "OpenAI",
+        displayName: "OpenAI Models",
         models: [{ model_name: "gpt-4o", metadata: { model_type: "llm" } }],
       }),
     ]);

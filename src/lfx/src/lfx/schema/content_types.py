@@ -34,6 +34,8 @@ from typing_extensions import TypedDict
 
 from lfx.schema.encoders import CUSTOM_ENCODERS
 
+MAX_REASONING_PROVIDER_DATA_BYTES = 64 * 1024
+
 
 class HeaderDict(TypedDict, total=False):
     title: str | None
@@ -258,6 +260,25 @@ class ReasoningContent(BaseContent):
 
     type: Literal["reasoning"] = Field(default="reasoning")
     text: str = ""
+    provider_data: Any | None = Field(
+        default=None,
+        description="Bounded JSON-compatible provider-native reasoning data retained for replay.",
+    )
+
+    @field_validator("provider_data")
+    @classmethod
+    def validate_provider_data(cls, value: Any | None) -> Any | None:
+        if value is None:
+            return None
+        try:
+            encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+        except (TypeError, ValueError) as exc:
+            msg = "provider_data must be JSON-compatible"
+            raise ValueError(msg) from exc
+        if len(encoded) > MAX_REASONING_PROVIDER_DATA_BYTES:
+            msg = f"provider_data exceeds {MAX_REASONING_PROVIDER_DATA_BYTES} bytes"
+            raise ValueError(msg)
+        return value
 
 
 class UsageContent(BaseContent):

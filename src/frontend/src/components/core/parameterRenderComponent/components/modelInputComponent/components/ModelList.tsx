@@ -73,11 +73,12 @@ const ModelList = ({
         >
           {models.map((data) => {
             position += 1;
+            const optionProvider = data.provider || provider;
             return (
               <CommandItem
                 key={`${provider}-${data.name}`}
-                value={`${provider}::${data.name}`}
-                onSelect={() => onSelect(data.name, provider)}
+                value={`${optionProvider}::${data.name}`}
+                onSelect={() => onSelect(data.name, optionProvider)}
                 className="w-full items-center rounded-none"
                 data-testid={getModelOptionTestId(provider, data.name)}
               >
@@ -108,7 +109,7 @@ const ModelList = ({
                       className={cn(
                         "h-4 w-4 shrink-0 text-primary",
                         selectedModel?.name === data.name &&
-                          selectedModel?.provider === provider
+                          selectedModel?.provider === optionProvider
                           ? "opacity-100"
                           : "opacity-0",
                       )}

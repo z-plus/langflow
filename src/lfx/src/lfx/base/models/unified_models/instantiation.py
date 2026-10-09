@@ -121,6 +121,60 @@ def _protect_model_connection(
     validate_url_for_ssrf_or_raise(effective_url)
 
 
+def _build_custom_provider_llm(
+    *,
+    provider: str,
+    model_name: str,
+    user_id: UUID | str | None,
+    stream: bool,
+    temperature: Any,
+    max_tokens: Any,
+) -> Any | None:
+    prefix = "custom-openai-compatible:"
+    if not provider.startswith(prefix):
+        return None
+
+    from uuid import UUID
+
+    try:
+        provider_id = UUID(provider.removeprefix(prefix))
+    except ValueError as exc:
+        msg = "Invalid custom model provider identity"
+        raise ValueError(msg) from exc
+    if provider != f"{prefix}{provider_id}":
+        msg = "Invalid custom model provider identity"
+        raise ValueError(msg)
+
+    from langflow.services.custom_model_provider.chat_adapter import OpenAICompatibleReasoningChatModel
+    from langflow.services.custom_model_provider.runtime import (
+        CustomProviderVerificationCallback,
+        resolve_custom_provider_runtime_config,
+    )
+
+    config = run_until_complete(
+        resolve_custom_provider_runtime_config(provider_id=provider_id, user_id=user_id, model_id=model_name)
+    )
+    kwargs: dict[str, Any] = {
+        "model": model_name,
+        "streaming": stream,
+        "api_key": config.api_key,
+        "base_url": config.base_url,
+        "callbacks": [CustomProviderVerificationCallback(provider_id=provider_id, user_id=user_id)],
+    }
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if max_tokens not in {None, ""}:
+        try:
+            parsed_max_tokens = int(max_tokens)
+        except (TypeError, ValueError):
+            pass
+        else:
+            if parsed_max_tokens >= 1:
+                kwargs["max_tokens"] = parsed_max_tokens
+    _protect_model_connection(kwargs, model_class_name="ChatOpenAI", url_param="base_url")
+    return OpenAICompatibleReasoningChatModel(**kwargs)
+
+
 def get_llm(
     model,
     user_id: UUID | str | None,
@@ -184,6 +238,20 @@ def get_llm(
     provider_policy.require(provider)
     if isinstance(model_name, str) and model_name:
         provider_policy.require_model(provider, model_name, model_type="llm")
+    if not isinstance(model_name, str) or not model_name:
+        msg = "Model name is required"
+        raise ValueError(msg)
+
+    custom_model = _build_custom_provider_llm(
+        provider=provider,
+        model_name=model_name,
+        user_id=user_id,
+        stream=stream,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    if custom_model is not None:
+        return custom_model
 
     # Resolve helpers through the package namespace only after policy passes so
     # tests can patch lfx.base.models.unified_models.<name> and denied requests
@@ -997,6 +1065,9 @@ def get_embeddings(
     provider_policy.require(provider)
     if isinstance(model_name, str) and model_name:
         provider_policy.require_model(provider, model_name, model_type="embeddings")
+    if provider.startswith("custom-openai-compatible:"):
+        msg = "Custom model providers only support language models"
+        raise ValueError(msg)
 
     # Resolve helpers through the patchable package namespace only after the
     # provider has been authorized for runtime use.

@@ -554,6 +554,7 @@ module.exports = {
             "Components/bundles-ollama",
             "Components/bundles-openai",
             "Components/bundles-openai-compatible",
+            "Components/custom-openai-compatible-providers",
             "Components/bundles-openrouter",
             "Components/bundles-oracle",
             "Components/bundles-orcarouter",

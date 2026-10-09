@@ -1,13 +1,15 @@
 # Add helper functions for each event type
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+import contextlib
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from copy import deepcopy
 from time import perf_counter
 from typing import Any, Protocol
 
 from langchain_core.agents import AgentFinish
 from langchain_core.messages import AIMessageChunk
 
-from lfx.schema.content_types import TextContent, ToolContent
+from lfx.schema.content_types import ReasoningContent, TextContent, ToolContent
 from lfx.schema.log import OnTokenFunctionType, SendMessageFunctionType
 from lfx.schema.message import Message
 
@@ -55,6 +57,52 @@ def _calculate_duration(start_time: float) -> int:
         result = int((current_time - start_time) * 1000)
 
     return result
+
+
+def _merge_replay_data(current: dict[str, Any], delta: Mapping[str, Any]) -> None:
+    for key, value in delta.items():
+        if isinstance(value, str) and isinstance(current.get(key), str):
+            current[key] += value
+        elif isinstance(value, list) and isinstance(current.get(key), list):
+            current[key].extend(value)
+        else:
+            current[key] = value
+
+
+def _upsert_reasoning_block(
+    agent_message: Message,
+    output: Any,
+    *,
+    block_id: str,
+    duration: int | None = None,
+    final: bool = False,
+) -> bool:
+    from lfx.base.models.reasoning_normalization import normalize_reasoning_content
+
+    events = normalize_reasoning_content(output)
+    reasoning_text = "".join(event.text for event in events if event.kind == "reasoning")
+    replay = getattr(output, "additional_kwargs", {}).get("reasoning_provider_data")
+    if not reasoning_text and not isinstance(replay, Mapping):
+        return False
+    block = next(
+        (item for item in agent_message.content_blocks if isinstance(item, ReasoningContent) and item.id == block_id),
+        None,
+    )
+    if block is None:
+        block = ReasoningContent(id=block_id, text="", provider_data={}, duration=duration)
+        agent_message.content_blocks.append(block)
+    block.text = reasoning_text if final else block.text + reasoning_text
+    if duration is not None:
+        block.duration = duration
+    if isinstance(replay, Mapping):
+        provider_data = {} if final else deepcopy(block.provider_data) if isinstance(block.provider_data, dict) else {}
+        if final:
+            provider_data.update(replay)
+        else:
+            _merge_replay_data(provider_data, replay)
+        with contextlib.suppress(ValueError):
+            block.provider_data = ReasoningContent(provider_data=provider_data).provider_data
+    return True
 
 
 async def handle_on_chain_start(
@@ -211,14 +259,22 @@ async def handle_on_chat_model_end(
         return agent_message, start_time
 
     blocks = _coerce_ai_message_blocks(output.content)
-    if not blocks:
+    run_id = f"reasoning:{event.get('run_id', '')}"
+    reasoning_appended = _upsert_reasoning_block(
+        agent_message,
+        output,
+        block_id=run_id,
+        duration=_calculate_duration(start_time),
+        final=True,
+    )
+    if not blocks and not reasoning_appended:
         return agent_message, start_time
 
     if agent_message.content_blocks is None:
         agent_message.content_blocks = []
 
     duration = _calculate_duration(start_time)
-    appended = False
+    appended = reasoning_appended
     for item in blocks:
         item_type = item.get("type")
         if item_type == "text":
@@ -417,7 +473,7 @@ async def handle_on_tool_error(
 async def handle_on_chain_stream(
     event: dict[str, Any],
     agent_message: Message,
-    send_message_callback: SendMessageFunctionType,  # noqa: ARG001
+    send_message_callback: SendMessageFunctionType,
     send_token_callback: OnTokenFunctionType | None,
     start_time: float,
     *,
@@ -442,6 +498,13 @@ async def handle_on_chain_stream(
         # The final message will be sent after the loop completes
         start_time = perf_counter()
     elif isinstance(data_chunk, AIMessageChunk):
+        reasoning_updated = _upsert_reasoning_block(
+            agent_message,
+            data_chunk,
+            block_id=f"reasoning:{event.get('run_id', '')}",
+        )
+        if reasoning_updated:
+            agent_message = await send_message_callback(message=agent_message, skip_db_update=True)
         output_text = _extract_output_text(data_chunk.content)
         # For streaming, send token event if callback is available
         # Note: we should expect the callback, but we keep it optional for backwards compatibility

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from fastapi import status
+from fastapi import HTTPException, status
 from langflow.services.database.models.flow.model import Flow
 from langflow.services.database.models.folder.model import Folder
 from langflow.services.deps import session_scope
@@ -51,6 +51,37 @@ async def _aopenai_only_policy(**kwargs):
 
 async def _aallow_all_policy(**kwargs):
     return _allow_all_policy(**kwargs)
+
+
+async def test_dynamic_provider_use_policy_is_enforced_without_existence_leak(monkeypatch):
+    from langflow.api.v1 import models as models_module
+
+    provider = f"custom-openai-compatible:{uuid4()}"
+
+    async def deny(current_user, providers, purpose, attributes):
+        assert current_user.id == "user-1"
+        assert provider in providers
+        assert purpose is ModelProviderPolicyPurpose.USE
+        assert attributes == {"is_superuser": False}
+        candidates = frozenset(resolve_provider_id(candidate) for candidate in providers)
+        return ModelProviderPolicySnapshot(
+            context=ModelProviderPolicyContext(user_id=current_user.id),
+            purpose=purpose,
+            candidate_provider_ids=candidates,
+            allowed_provider_ids=candidates - {provider},
+        )
+
+    monkeypatch.setattr(models_module, "_aresolve_policy_for_providers", deny)
+    with pytest.raises(HTTPException) as exc_info:
+        await models_module._require_provider(
+            SimpleNamespace(id="user-1"),
+            provider,
+            ModelProviderPolicyPurpose.USE,
+            {"is_superuser": False},
+        )
+
+    assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+    assert exc_info.value.detail == "Model provider not found"
 
 
 @pytest.fixture
@@ -166,9 +197,11 @@ async def test_provider_descriptors_union_stamped_palette_ids_without_duplicates
     monkeypatch.setattr(models_module, "aresolve_model_provider_policy", _allow_openai_and_mistral)
     monkeypatch.setattr(models_module, "get_model_providers", lambda: ["OpenAI"])
     monkeypatch.setattr(models_module, "get_and_cache_all_types_dict", AsyncMock(return_value=palette))
+    monkeypatch.setattr(models_module, "custom_provider_catalog", AsyncMock(return_value=[]))
 
     descriptors = await models_module.list_model_provider_descriptors(
         SimpleNamespace(id="user-1"),
+        object(),
         {"is_superuser": False},
     )
 

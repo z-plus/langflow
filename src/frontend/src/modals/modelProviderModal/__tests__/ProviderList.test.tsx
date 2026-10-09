@@ -60,7 +60,12 @@ jest.mock("@/controllers/API/queries/models/use-get-model-providers", () => ({
 }));
 
 interface MockProviderListItemProps {
-  provider: { provider: string; model_count?: number };
+  provider: {
+    provider: string;
+    display_name?: string;
+    custom_provider?: boolean;
+    model_count?: number;
+  };
   isSelected: boolean;
   onSelect: (provider: MockProviderListItemProps["provider"]) => void;
 }
@@ -75,7 +80,8 @@ jest.mock("../components/ProviderListItem", () => ({
       data-selected={isSelected}
       onClick={() => onSelect(provider)}
     >
-      {provider.provider} - {provider.model_count} models
+      {provider.display_name || provider.provider} - {provider.model_count}{" "}
+      models
     </button>
   ),
 }));
@@ -198,6 +204,37 @@ describe("ProviderList", () => {
 
       expect(screen.getByTestId("provider-item-OpenAI")).toBeInTheDocument();
       expect(screen.getByTestId("provider-item-Anthropic")).toBeInTheDocument();
+    });
+
+    it("uses a custom provider display name for rendering and search", () => {
+      const useGetModelProvidersMock =
+        require("@/controllers/API/queries/models/use-get-model-providers").useGetModelProviders;
+      useGetModelProvidersMock.mockReturnValueOnce({
+        data: [
+          {
+            provider: "custom-openai-compatible:provider-id",
+            display_name: "Company Gateway",
+            custom_provider: true,
+            icon: "Plug",
+            is_enabled: true,
+            is_configured: true,
+            models: [{ model_name: "qwen3", metadata: { model_type: "llm" } }],
+          },
+        ],
+        isLoading: false,
+        isFetching: false,
+        fetchStatus: "idle",
+        isError: false,
+      });
+
+      render(<ProviderList modelType="all" query="company" />);
+
+      expect(
+        screen.getByText("Company Gateway - 1 models"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/custom-openai-compatible:provider-id/),
+      ).not.toBeInTheDocument();
     });
 
     it("should filter providers by LLM model type", () => {

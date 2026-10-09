@@ -182,6 +182,95 @@ describe("ContentDisplay", () => {
       expect(label.className).toMatch(/animate-pulse/);
     });
 
+    it("announces live streaming reasoning through an aria-live region", () => {
+      const reasoning = {
+        type: "reasoning",
+        text: "Considering options...",
+      } as unknown as ContentBlockItem;
+      const { container } = render(
+        <ContentDisplay content={reasoning} chatId="t-r-live" />,
+      );
+      const liveRegion = container.querySelector("[aria-live]");
+      expect(liveRegion).not.toBeNull();
+      expect(liveRegion).toHaveAttribute("aria-live", "polite");
+      expect(screen.queryByRole("button", { name: /Thought for/i })).toBeNull();
+    });
+
+    it("suppresses the disclosure when completed reasoning has no displayable text", () => {
+      const reasoning = {
+        type: "reasoning",
+        text: "",
+        duration: 3200,
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={reasoning} chatId="t-r-empty" />);
+      expect(screen.queryByText(/Thought for/)).not.toBeInTheDocument();
+      expect(screen.queryByTestId("reasoning-body")).not.toBeInTheDocument();
+    });
+
+    it("toggles aria-expanded and the aria-controls body on click", () => {
+      const reasoning = {
+        type: "reasoning",
+        text: "I checked the docs and decided to call the weather tool.",
+        duration: 3200,
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={reasoning} chatId="t-r-a11y" />);
+      const trigger = screen.getByRole("button", { name: /Thought for/i });
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+      const controlsId = trigger.getAttribute("aria-controls");
+      expect(controlsId).toBeTruthy();
+      expect(document.getElementById(controlsId as string)).toBeNull();
+      fireEvent.click(trigger);
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+      const body = document.getElementById(controlsId as string);
+      expect(body).not.toBeNull();
+      expect(body).toHaveTextContent(/I checked the docs/);
+      fireEvent.click(trigger);
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+      expect(document.getElementById(controlsId as string)).toBeNull();
+    });
+
+    it("expands the disclosure with the keyboard", () => {
+      // Native buttons fire click on Enter/Space, not on keyDown. Drive the
+      // click explicitly so React onClick toggles the disclosure state.
+      const reasoning = {
+        type: "reasoning",
+        text: "Reasoning body that the keyboard user should reach.",
+        duration: 1200,
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={reasoning} chatId="t-r-kbd" />);
+      const trigger = screen.getByRole("button", { name: /Thought for/i });
+      trigger.focus();
+      fireEvent.keyDown(trigger, { key: "Enter" });
+      fireEvent.click(trigger);
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+      fireEvent.keyDown(trigger, { key: " " });
+      fireEvent.click(trigger);
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+    });
+
+    it("survives reload with the same disclosure state and body", () => {
+      const reasoning = {
+        type: "reasoning",
+        text: "Persisted reasoning text.",
+        duration: 2000,
+      } as unknown as ContentBlockItem;
+      const { unmount } = render(
+        <ContentDisplay content={reasoning} chatId="t-r-reload" />,
+      );
+      const trigger = screen.getByRole("button", { name: /Thought for/i });
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+      unmount();
+      render(<ContentDisplay content={reasoning} chatId="t-r-reload" />);
+      const reloaded = screen.getByRole("button", { name: /Thought for/i });
+      expect(reloaded).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(reloaded);
+      expect(
+        document.getElementById(
+          reloaded.getAttribute("aria-controls") as string,
+        ),
+      ).toHaveTextContent(/Persisted reasoning text/);
+    });
+
     it("collapses by default with a 'Thought for …' summary when duration is set", () => {
       const reasoning = {
         type: "reasoning",

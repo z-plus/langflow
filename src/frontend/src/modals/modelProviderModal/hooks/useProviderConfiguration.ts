@@ -205,6 +205,8 @@ export const useProviderConfiguration = ({
     if (!freshProvider) return null;
     return {
       ...selectedProvider,
+      display_name: freshProvider.display_name,
+      custom_provider: freshProvider.custom_provider,
       is_enabled: freshProvider.is_enabled,
       is_configured: freshProvider.is_configured,
       models: freshProvider.models || selectedProvider.models,

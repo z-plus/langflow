@@ -36,12 +36,17 @@ from lfx.services.model_provider_policy import (
 from loguru import logger
 from pydantic import BaseModel, field_validator
 
-from langflow.api.utils import CurrentActiveUser, DbSession
+from langflow.api.utils import CurrentActiveUser, DbSession, DbSessionReadOnly
 from langflow.api.v1.model_provider_policy_scope import (
     ProviderPolicyAttributes,
     ProviderPolicyAttributesDependency,
 )
 from langflow.services.authorization import VariableAction, ensure_variable_permission
+from langflow.services.custom_model_provider import (
+    custom_provider_catalog,
+    parse_custom_provider_identity,
+    resolve_provider_model_reference,
+)
 from langflow.services.deps import get_settings_service, get_variable_service
 from langflow.services.variable.constants import GENERIC_TYPE
 from langflow.services.variable.service import DatabaseVariableService
@@ -124,7 +129,12 @@ async def _require_provider(
     purpose: ModelProviderPolicyPurpose,
     attributes: ProviderPolicyAttributes,
 ) -> None:
-    provider_policy = await _aresolve_policy(current_user, purpose, attributes)
+    provider_policy = await _aresolve_policy_for_providers(
+        current_user,
+        [*get_model_providers(), provider],
+        purpose,
+        attributes,
+    )
     _require_provider_from_policy(provider_policy, provider)
 
 
@@ -204,22 +214,27 @@ class ModelProviderDescriptorRead(BaseModel):
 @router.get("/providers", status_code=200)
 async def list_model_providers(
     current_user: CurrentActiveUser,
+    session: DbSessionReadOnly,
     provider_policy_attributes: ProviderPolicyAttributesDependency,
     purpose: Annotated[ProviderReadPurpose | None, Query()] = None,
 ) -> list[str]:
     """Return available model providers."""
+    custom_catalog = await custom_provider_catalog(session, user_id=current_user.id)
+    candidates = [*get_model_providers(), *(entry["provider"] for entry in custom_catalog)]
     policy = await _aresolve_read_policy(
         current_user,
         purpose,
         default=ModelProviderPolicyPurpose.DISCOVER,
         attributes=provider_policy_attributes,
+        providers=candidates,
     )
-    return policy.filter(get_model_providers())
+    return policy.filter(candidates)
 
 
 @router.get("/provider-descriptors", status_code=200, response_model=list[ModelProviderDescriptorRead])
 async def list_model_provider_descriptors(
     current_user: CurrentActiveUser,
+    session: DbSessionReadOnly,
     provider_policy_attributes: ProviderPolicyAttributesDependency,
     purpose: Annotated[ProviderReadPurpose | None, Query()] = None,
 ) -> list[ModelProviderDescriptorRead]:
@@ -265,6 +280,14 @@ async def list_model_provider_descriptors(
                 provider=provider_id,
             )
 
+    for provider_data in await custom_provider_catalog(session, user_id=current_user.id):
+        provider_id = provider_data["provider_id"]
+        descriptors_by_id[provider_id] = ModelProviderDescriptorRead(
+            provider_id=provider_id,
+            display_name=provider_data["display_name"],
+            provider=provider_id,
+        )
+
     policy = await _aresolve_read_policy(
         current_user,
         purpose,
@@ -302,11 +325,15 @@ async def list_models(
 
     Pass providers as repeated query params, e.g. `?provider=OpenAI&provider=Anthropic`.
     """
+    custom_catalog = await custom_provider_catalog(session, user_id=current_user.id, include_unavailable=True)
+    custom_provider_ids = [entry["provider"] for entry in custom_catalog]
+    policy_candidates = [*get_model_providers(), *custom_provider_ids]
     provider_policy = await _aresolve_read_policy(
         current_user,
         purpose,
         default=ModelProviderPolicyPurpose.DISCOVER,
         attributes=provider_policy_attributes,
+        providers=policy_candidates,
     )
     selected_providers: list[str] | None = provider_policy.filter(provider) if provider is not None else None
     if provider is not None and not selected_providers:
@@ -316,6 +343,7 @@ async def list_models(
         purpose,
         default=ModelProviderPolicyPurpose.CONFIGURE,
         attributes=provider_policy_attributes,
+        providers=policy_candidates,
     )
     metadata_filters = {
         k: v
@@ -344,6 +372,7 @@ async def list_models(
         current_user=current_user,
         provider_policy=configuration_policy,
         provider_status=provider_configured_status,
+        custom_catalog=custom_catalog,
     )
     enabled_models_map = enabled_models_result.get("enabled_models", {})
 
@@ -373,6 +402,22 @@ async def list_models(
         model_type=model_type,
         **metadata_filters,
     )
+
+    if model_type in {None, "llm"}:
+        for provider_data in custom_catalog:
+            if selected_providers and provider_data["provider"] not in selected_providers:
+                continue
+            models = provider_data["models"]
+            if model_name is not None:
+                models = [model for model in models if model["model_name"] == model_name]
+            if metadata_filters:
+                models = [
+                    model
+                    for model in models
+                    if all(model["metadata"].get(key) == value for key, value in metadata_filters.items())
+                ]
+            if models or (model_name is None and not metadata_filters):
+                filtered_models.append({**provider_data, "models": models, "num_models": len(models)})
 
     # Live-discovery-only providers (contributed by extension bundles, e.g. vLLM or
     # OpenAI Compatible) ship no static catalog rows, so the catalog query above can
@@ -434,7 +479,8 @@ async def list_models(
 
     for provider_dict in filtered_models:
         prov_name = provider_dict.get("provider")
-        provider_dict["provider_id"] = resolve_provider_id(prov_name) if isinstance(prov_name, str) else None
+        if not provider_dict.get("provider_id"):
+            provider_dict["provider_id"] = resolve_provider_id(prov_name) if isinstance(prov_name, str) else None
         provider_dict["is_configured"] = provider_configured_status.get(prov_name, False)
         provider_dict["live_discovery"] = prov_name in live_discovery_providers
         prov_models_status = enabled_models_map.get(prov_name, {})
@@ -956,6 +1002,7 @@ async def _get_enabled_models_result(
     provider_policy: ModelProviderPolicySnapshot,
     model_names: list[str] | None = None,
     provider_status: dict[str, bool] | None = None,
+    custom_catalog: list[dict] | None = None,
 ):
     """Get enabled models for the current user."""
     all_models_by_provider = get_unified_models_detailed(
@@ -976,6 +1023,17 @@ async def _get_enabled_models_result(
         for provider_data in all_models_by_provider
         if provider_policy.allows(provider_data.get("provider", ""))
     ]
+    custom_catalog = custom_catalog or []
+    for provider_data in custom_catalog:
+        provider = provider_data.get("provider")
+        if isinstance(provider, str) and provider_policy.allows(provider):
+            provider_status[provider] = True
+            available_models = [
+                model for model in provider_data.get("models", []) if model.get("metadata", {}).get("available", True)
+            ]
+            all_models_by_provider.append(
+                {**provider_data, "models": available_models, "num_models": len(available_models)}
+            )
     configured_providers = {
         provider for provider, configured in provider_status.items() if configured and provider_policy.allows(provider)
     }
@@ -1082,17 +1140,20 @@ async def get_enabled_models(
     purpose: Annotated[ProviderReadPurpose | None, Query()] = None,
 ):
     """Get policy-visible enabled models for the current user."""
+    custom_catalog = await custom_provider_catalog(session, user_id=current_user.id)
     provider_policy = await _aresolve_read_policy(
         current_user,
         purpose,
         default=ModelProviderPolicyPurpose.CONFIGURE,
         attributes=provider_policy_attributes,
+        providers=[*get_model_providers(), *(entry["provider"] for entry in custom_catalog)],
     )
     return await _get_enabled_models_result(
         session=session,
         current_user=current_user,
         provider_policy=provider_policy,
         model_names=model_names,
+        custom_catalog=custom_catalog,
     )
 
 
@@ -1127,8 +1188,9 @@ async def update_enabled_models(
     # Resolve the hierarchy once before reading credentials or mutating model
     # status. Reuse the snapshot throughout the request so authorization cannot
     # change between validation, persistence, and response filtering.
-    provider_policy = await _aresolve_policy(
+    provider_policy = await _aresolve_policy_for_providers(
         current_user,
+        [*get_model_providers(), *(update.provider for update in updates)],
         ModelProviderPolicyPurpose.CONFIGURE,
         provider_policy_attributes,
     )
@@ -1185,6 +1247,21 @@ async def update_enabled_models(
                     status_code=400,
                     detail=f"Cannot enable {unavailable_reason} model: {update.model_id}",
                 )
+
+            custom_provider_id = parse_custom_provider_identity(update.provider)
+            if custom_provider_id is not None:
+                _provider_ref, model_ref = await resolve_provider_model_reference(
+                    session,
+                    provider_id=custom_provider_id,
+                    user_id=current_user.id,
+                    model_id=update.model_id,
+                )
+                if model_ref is None or not model_ref.available:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Custom model is not available: {update.model_id}",
+                    )
+                continue
 
             from lfx.base.models.unified_models import get_all_variables_for_provider, validate_model_provider_key
 
@@ -1282,11 +1359,6 @@ async def get_default_model(
     model_type: Annotated[str, Query(description="Type of model: 'language' or 'embedding'")] = "language",
 ):
     """Get the default model for the current user."""
-    provider_policy = await _aresolve_policy(
-        current_user,
-        ModelProviderPolicyPurpose.USE,
-        provider_policy_attributes,
-    )
     variable_service = get_variable_service()
     if not isinstance(variable_service, DatabaseVariableService):
         return {"default_model": None}
@@ -1308,8 +1380,36 @@ async def get_default_model(
                 ):
                     logger.warning("Invalid default model format for user %s", current_user.id)
                     return {"default_model": None}
+                provider_policy = await _aresolve_policy_for_providers(
+                    current_user,
+                    [*get_model_providers(), parsed_value["provider"]],
+                    ModelProviderPolicyPurpose.USE,
+                    provider_policy_attributes,
+                )
                 if not provider_policy.allows(parsed_value["provider"]):
                     return {"default_model": None}
+                custom_provider_id = parse_custom_provider_identity(parsed_value["provider"])
+                if custom_provider_id is not None:
+                    provider_ref, model_ref = await resolve_provider_model_reference(
+                        session,
+                        provider_id=custom_provider_id,
+                        user_id=current_user.id,
+                        model_id=parsed_value["model_name"],
+                    )
+                    if provider_ref is None or provider_ref.deleted_at is not None:
+                        parsed_value["available"] = False
+                        parsed_value["status"] = "provider_deleted"
+                    else:
+                        parsed_value["provider_name"] = provider_ref.name
+                        if model_ref is None:
+                            parsed_value["available"] = False
+                            parsed_value["status"] = "model_missing"
+                        elif not model_ref.available:
+                            parsed_value["available"] = False
+                            parsed_value["status"] = "model_unavailable"
+                        else:
+                            parsed_value["available"] = True
+                            parsed_value["status"] = "available"
                 return {"default_model": parsed_value}
     except ValueError:
         # Variable not found
@@ -1335,6 +1435,19 @@ async def set_default_model(
     # Creating/updating the default-model Variable is a variable WRITE. Enforce
     # so the external access ceiling caps a "viewer"; the owner with no ceiling
     # fast-paths via owner-override.
+    custom_provider_id = parse_custom_provider_identity(request.provider)
+    if custom_provider_id is not None:
+        if request.model_type != "language":
+            raise HTTPException(status_code=400, detail="Custom providers only support language models")
+        provider_ref, model_ref = await resolve_provider_model_reference(
+            session,
+            provider_id=custom_provider_id,
+            user_id=current_user.id,
+            model_id=request.model_name,
+        )
+        if provider_ref is None or provider_ref.deleted_at is not None or model_ref is None or not model_ref.available:
+            raise HTTPException(status_code=400, detail=f"Custom model is not available: {request.model_name}")
+
     await ensure_variable_permission(
         current_user,
         VariableAction.WRITE,

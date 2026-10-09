@@ -71,15 +71,10 @@ export function ModelSelector({
     [allModels],
   );
 
-  // Auto-select the default model if none selected or if the selected model
-  // is no longer available (e.g., provider was removed or model was disabled)
+  // Auto-select only for a new Assistant. Keep saved unavailable selections
+  // visible so reconnecting a provider does not silently change the flow.
   useEffect(() => {
-    if (!defaultModel) return;
-
-    const isSelectedModelValid =
-      selectedModel && allModels.some((m) => m.id === selectedModel.id);
-
-    if (!isSelectedModelValid) {
+    if (!selectedModel && defaultModel) {
       onModelChange({
         id: defaultModel.id,
         name: defaultModel.name,
@@ -90,6 +85,14 @@ export function ModelSelector({
   }, [selectedModel, allModels, defaultModel, onModelChange]);
 
   const currentModel = selectedModel || defaultModel;
+  const selectedUnavailable = Boolean(
+    selectedModel &&
+      !allModels.some(
+        (model) =>
+          model.provider === selectedModel.provider &&
+          model.name === selectedModel.name,
+      ),
+  );
 
   // Resolve the provider icon for the currently selected model
   const currentProviderIcon = useMemo(() => {
@@ -146,7 +149,7 @@ export function ModelSelector({
     );
   }
 
-  if (allModels.length === 0) {
+  if (allModels.length === 0 && !currentModel) {
     return (
       <Button
         variant="ghost"
@@ -181,6 +184,11 @@ export function ModelSelector({
             <span>
               {currentModel?.displayName || t("assistant.selectModel")}
             </span>
+            {selectedUnavailable && (
+              <span className="text-destructive">
+                ({t("model.unavailable")})
+              </span>
+            )}
             <ForwardedIconComponent
               name={isOpen ? "ChevronUp" : "ChevronDown"}
               className="h-3 w-3"
@@ -195,7 +203,7 @@ export function ModelSelector({
             <div key={provider.provider}>
               {index > 0 && <DropdownMenuSeparator className="my-2" />}
               <DropdownMenuLabel className="text-xs font-semibold my-2 ml-2 text-muted-foreground">
-                {provider.provider}
+                {provider.displayName}
               </DropdownMenuLabel>
               <div className="flex flex-col gap-1">
                 {provider.models.map((model) => {

@@ -44,6 +44,7 @@ from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from lfx.base.models.model_metadata import (
     CONDITIONAL_LIVE_MODEL_PROVIDERS,
@@ -622,6 +623,17 @@ def resolve_provider_id(name_or_id_or_alias: str) -> str:
     if not isinstance(name_or_id_or_alias, str) or not name_or_id_or_alias.strip():
         msg = "Provider identity must be a non-empty string"
         raise ValueError(msg)
+    selector = name_or_id_or_alias.strip()
+    custom_prefix = "custom-openai-compatible:"
+    if selector.startswith(custom_prefix):
+        try:
+            provider_uuid = UUID(selector.removeprefix(custom_prefix))
+        except ValueError:
+            pass
+        else:
+            canonical = f"{custom_prefix}{provider_uuid}"
+            if selector == canonical:
+                return canonical
     if provider_id := provider_id_for(name_or_id_or_alias):
         return provider_id
     try:

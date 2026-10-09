@@ -139,6 +139,69 @@ describe("buildGroupedOptions", () => {
     expect(grouped.OpenAI[0].icon).toBe("OpenAiIcon");
   });
 
+  it("groups same-name custom models by display name while preserving stable provider IDs", () => {
+    const firstProvider = "custom-openai-compatible:first";
+    const secondProvider = "custom-openai-compatible:second";
+    const providers: ModelProviderWithStatus[] = [
+      {
+        provider: firstProvider,
+        display_name: "工作模型",
+        is_enabled: true,
+        models: [{ model_name: "qwen3", metadata: { model_type: "llm" } }],
+      },
+      {
+        provider: secondProvider,
+        display_name: "备用模型",
+        is_enabled: true,
+        models: [{ model_name: "qwen3", metadata: { model_type: "llm" } }],
+      },
+    ];
+    const enabledModels = {
+      [firstProvider]: { qwen3: true },
+      [secondProvider]: { qwen3: true },
+    };
+
+    const grouped = buildGroupedOptions({
+      ...base,
+      options: [],
+      providers,
+      enabledModels,
+    });
+
+    expect(grouped["工作模型"][0].provider).toBe(firstProvider);
+    expect(grouped["备用模型"][0].provider).toBe(secondProvider);
+
+    providers[0].display_name = "已改名";
+    const renamed = buildGroupedOptions({
+      ...base,
+      options: [],
+      providers,
+      enabledModels,
+    });
+    expect(renamed["已改名"][0].provider).toBe(firstProvider);
+    expect(renamed["工作模型"]).toBeUndefined();
+  });
+
+  it("does not offer custom LLMs to embedding selectors", () => {
+    const provider = "custom-openai-compatible:first";
+    const grouped = buildGroupedOptions({
+      ...base,
+      options: [],
+      providers: [
+        {
+          provider,
+          display_name: "自定义供应商",
+          is_enabled: true,
+          models: [{ model_name: "qwen3", metadata: { model_type: "llm" } }],
+        },
+      ],
+      enabledModels: { [provider]: { qwen3: true } },
+      modelType: "embeddings",
+    });
+
+    expect(grouped).toEqual({});
+  });
+
   it("applies modelFilters against option metadata", () => {
     const grouped = buildGroupedOptions({
       ...base,

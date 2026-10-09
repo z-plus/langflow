@@ -68,6 +68,25 @@ describe("ProviderListItem", () => {
       expect(screen.getByText("OpenAI")).toBeInTheDocument();
     });
 
+    it("shows a custom provider display name without exposing its stable id", () => {
+      render(
+        <ProviderListItem
+          {...defaultProps}
+          provider={{
+            ...mockEnabledProvider,
+            provider: "custom-openai-compatible:provider-id",
+            display_name: "Company Gateway",
+            custom_provider: true,
+          }}
+        />,
+      );
+
+      expect(screen.getByText("Company Gateway")).toBeInTheDocument();
+      expect(
+        screen.queryByText("custom-openai-compatible:provider-id"),
+      ).not.toBeInTheDocument();
+    });
+
     it("should display model count badge for enabled provider", () => {
       render(<ProviderListItem {...defaultProps} />);
 

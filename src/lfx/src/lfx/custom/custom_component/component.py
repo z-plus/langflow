@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import inspect
 import logging
 from collections.abc import AsyncIterator, Iterator, Mapping
@@ -36,6 +37,7 @@ from lfx.field_typing import Tool  # noqa: TC001
 from lfx.helpers.custom import format_type
 from lfx.memory import astore_message, aupdate_messages, delete_message
 from lfx.schema.artifact import get_artifact_type, post_process_raw
+from lfx.schema.content_types import ReasoningContent
 from lfx.schema.data import Data
 from lfx.schema.log import Log
 from lfx.schema.message import ErrorMessage, Message
@@ -66,6 +68,37 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ComponentToolkit = None
+
+
+def _merge_reasoning_replay(current: dict[str, Any], delta: Mapping[str, Any]) -> None:
+    for key, value in delta.items():
+        if isinstance(value, str) and isinstance(current.get(key), str):
+            current[key] += value
+        elif isinstance(value, list) and isinstance(current.get(key), list):
+            current[key].extend(value)
+        else:
+            current[key] = value
+
+
+def _apply_reasoning_chunk(message: Message, chunk: Any) -> bool:
+    from lfx.base.models.reasoning_normalization import normalize_reasoning_content
+
+    events = normalize_reasoning_content(chunk)
+    reasoning_text = "".join(event.text for event in events if event.kind == "reasoning")
+    replay = getattr(chunk, "additional_kwargs", {}).get("reasoning_provider_data")
+    if not reasoning_text and not isinstance(replay, Mapping):
+        return False
+    block = next((item for item in reversed(message.content_blocks) if isinstance(item, ReasoningContent)), None)
+    if block is None:
+        block = ReasoningContent(text="", provider_data={})
+        message.content_blocks.append(block)
+    block.text += reasoning_text
+    if isinstance(replay, Mapping):
+        provider_data = deepcopy(block.provider_data) if isinstance(block.provider_data, dict) else {}
+        _merge_reasoning_replay(provider_data, replay)
+        with contextlib.suppress(ValueError):
+            block.provider_data = ReasoningContent(provider_data=provider_data).provider_data
+    return True
 
 
 def get_component_toolkit():
@@ -2258,9 +2291,12 @@ class Component(CustomComponent):
             first_chunk = True
             usage_data: Usage | None = None
             for chunk in iterator:
+                reasoning_updated = _apply_reasoning_chunk(message, chunk)
                 complete_message = await self._process_chunk(
                     chunk.content, complete_message, message_id, message, first_chunk=first_chunk
                 )
+                if reasoning_updated:
+                    await self._send_message_event(message, id_=message_id)
                 first_chunk = False
                 chunk_usage = extract_usage_from_chunk(chunk)
                 usage_data = accumulate_usage(usage_data, chunk_usage)
@@ -2276,9 +2312,12 @@ class Component(CustomComponent):
         first_chunk = True
         usage_data: Usage | None = None
         async for chunk in iterator:
+            reasoning_updated = _apply_reasoning_chunk(message, chunk)
             complete_message = await self._process_chunk(
                 chunk.content, complete_message, message_id, message, first_chunk=first_chunk
             )
+            if reasoning_updated:
+                await self._send_message_event(message, id_=message_id)
             first_chunk = False
             chunk_usage = extract_usage_from_chunk(chunk)
             usage_data = accumulate_usage(usage_data, chunk_usage)

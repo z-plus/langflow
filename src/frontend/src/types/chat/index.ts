@@ -211,6 +211,11 @@ export interface FileContent extends BaseContent {
 export interface ReasoningContent extends BaseContent {
   type: "reasoning";
   text: string;
+  // Bounded JSON-compatible provider-native reasoning data retained for
+  // subsequent request replay. Frontend types accept the field so streamed,
+  // reloaded, and persisted reasoning blocks keep it intact; the renderer
+  // never displays this opaque value to the user.
+  provider_data?: unknown;
 }
 
 export interface UsageContent extends BaseContent {
