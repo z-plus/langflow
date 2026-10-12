@@ -18,6 +18,14 @@ export type Provider = {
   /** True when the model list is discovered from the provider's endpoint
    *  after credentials are configured (e.g. IBM WatsonX, OpenRouter, vLLM). */
   live_discovery?: boolean;
+  /** Present only for user-created custom suppliers (custom_provider rows). */
+  custom?: boolean;
+  /** User-facing label for custom suppliers (the row's display_name). */
+  display_name?: string;
+  /** Whether the supplier has a stored API key. */
+  has_api_key?: boolean;
+  /** draft | valid | invalid — connection validation state. */
+  validation_status?: "draft" | "valid" | "invalid";
 };
 
 /** Map of provider -> model_name -> enabled status */

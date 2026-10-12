@@ -37,6 +37,7 @@ export const URLs = {
   MEMORIES: `memories`,
   MODELS: `models`,
   MODEL_PROVIDERS: `models/providers`,
+  CUSTOM_PROVIDERS: `custom-providers`,
   RUN: `run`,
   RUN_SESSION: `run/session`,
   REGISTRATION: `registration`,

@@ -172,6 +172,24 @@ def get_llm(
             "so the component knows which provider to use."
         )
         raise ValueError(msg)
+
+    # Custom suppliers are user-owned OpenAI-compatible endpoints. They resolve
+    # their own connection (stored row, not global variables) and are not gated
+    # by the install-wide model-provider ceiling. Detection is best-effort: when
+    # the backend is absent or the row is gone, fall through to the standard path.
+    custom_connection: dict[str, Any] | None = None
+    is_custom_provider = False
+    if user_id:
+        try:
+            from langflow.services.database.models.custom_provider.service import get_custom_provider_connection
+
+            connection = get_custom_provider_connection(user_id, provider)
+            if connection is not None:
+                custom_connection = connection
+                is_custom_provider = True
+        except Exception:  # noqa: BLE001 -- lfx runs without the backend in some distributions
+            custom_connection = None
+
     if provider_policy is None:
         from lfx.base.models.provider_registry import get_registry_snapshot
         from lfx.services.model_provider_policy import ModelProviderPolicyPurpose, resolve_model_provider_policy
@@ -181,9 +199,10 @@ def get_llm(
             providers=(*get_registry_snapshot().provider_ids, provider),
             purpose=ModelProviderPolicyPurpose.USE,
         )
-    provider_policy.require(provider)
-    if isinstance(model_name, str) and model_name:
-        provider_policy.require_model(provider, model_name, model_type="llm")
+    if not is_custom_provider:
+        provider_policy.require(provider)
+        if isinstance(model_name, str) and model_name:
+            provider_policy.require_model(provider, model_name, model_type="llm")
 
     # Resolve helpers through the package namespace only after policy passes so
     # tests can patch lfx.base.models.unified_models.<name> and denied requests
@@ -198,7 +217,11 @@ def get_llm(
     # metadata fallback under the OSS allow-all policy.
     from lfx.base.models.provider_registry import provider_name_for_id, resolve_provider_id
 
-    provider_id = resolve_provider_id(provider)
+    try:
+        provider_id = resolve_provider_id(provider)
+    except ValueError:
+        # Custom supplier ids are already stable runtime ids, not registry names.
+        provider_id = provider
     canonical_provider = provider_name_for_id(provider_id)
     provider_is_known = canonical_provider is not None
     provider = canonical_provider or provider
@@ -233,13 +256,17 @@ def get_llm(
 
     # Get API key from user input or global variables
     api_key = unified_models_module.get_api_key_for_provider(user_id, provider, api_key)
+    # Custom suppliers store their key in the supplier row, not as a global
+    # variable, so prefer it once the shared resolution came up empty.
+    if not api_key and is_custom_provider and custom_connection:
+        api_key = custom_connection.get("api_key")
 
     # Validate API key. Ollama needs none; extension-bundle providers that
     # declare api_key_required=False (e.g. local OpenAI-compatible servers such
     # as vLLM) also opt out via provider_registry.
     from lfx.base.models.provider_registry import is_api_key_optional, is_registered
 
-    if not api_key and provider != "Ollama" and not is_api_key_optional(provider):
+    if not api_key and provider != "Ollama" and not is_api_key_optional(provider) and not is_custom_provider:
         # Bug 2 [P1] — Defensive guard: provider arriving as empty / None /
         # literal "Unknown" produces a nonsense error message (the worst
         # case being ``Unknown API key is required when using Unknown
@@ -476,6 +503,17 @@ def get_llm(
         connection_url_param = "endpoint"
         # Bound hung/blackholed endpoints the same way live discovery does.
         kwargs["request_timeout"] = AZURE_AI_FOUNDRY_REQUEST_TIMEOUT
+    elif is_custom_provider and custom_connection:
+        # User-defined OpenAI-compatible supplier: point ChatOpenAI at the row's
+        # base_url and key. localhost is rewritten so a Dockerised backend can
+        # reach a host-side server, and _protect_model_connection installs the
+        # DNS-pinned (SSRF-safe) client for the resolved URL below.
+        from lfx.utils.util import transform_localhost_url
+
+        kwargs["base_url"] = transform_localhost_url(custom_connection["base_url"])
+        if custom_connection.get("api_key"):
+            kwargs["api_key"] = custom_connection["api_key"]
+        connection_url_param = "base_url"
     elif is_registered(provider):
         # Bundle-contributed provider: apply its declared connection variables
         # (base_url, attribution headers, etc.) generically from its metadata.
@@ -661,13 +699,36 @@ def _compose_embedding_kwargs(
     )
 
     metadata = metadata or {}
-    provider_id = resolve_provider_id(provider)
+    try:
+        provider_id = resolve_provider_id(provider)
+    except ValueError:
+        # Custom supplier ids are already stable runtime ids, not registry names.
+        provider_id = provider
     canonical_provider = provider_name_for_id(provider_id)
     provider_is_known = canonical_provider is not None
     provider = canonical_provider or provider
+
+    # Custom suppliers (user-owned OpenAI-compatible endpoints) resolve their own
+    # connection; best-effort detection falls back to the standard path.
+    custom_connection: dict[str, Any] | None = None
+    is_custom_provider = False
+    if user_id:
+        try:
+            from langflow.services.database.models.custom_provider.service import get_custom_provider_connection
+
+            connection = get_custom_provider_connection(user_id, provider)
+            if connection is not None:
+                custom_connection = connection
+                is_custom_provider = True
+        except Exception:  # noqa: BLE001 -- lfx runs without the backend in some distributions
+            custom_connection = None
+
     api_key_override = component_api_key if provider == selected_provider else None
     api_key = unified_models_module.get_api_key_for_provider(user_id, provider, api_key_override)
-    if not api_key and provider != "Ollama" and not is_api_key_optional(provider):
+    if not api_key and is_custom_provider and custom_connection:
+        # Custom suppliers store their key in the supplier row, not as a global variable.
+        api_key = custom_connection.get("api_key")
+    if not api_key and provider != "Ollama" and not is_api_key_optional(provider) and not is_custom_provider:
         return None
     if not api_key and is_api_key_optional(provider):
         api_key = "EMPTY"  # pragma: allowlist secret
@@ -799,6 +860,15 @@ def _compose_embedding_kwargs(
         )
         connection_url_param = param_mapping["base_url"]
         kwargs[connection_url_param] = base_url_value
+
+    if is_custom_provider and custom_connection:
+        # User-defined OpenAI-compatible supplier: point OpenAIEmbeddings at the
+        # row's base_url; _protect_model_connection installs the DNS-pinned
+        # (SSRF-safe) client for the resolved URL below.
+        from lfx.utils.util import transform_localhost_url
+
+        kwargs["base_url"] = transform_localhost_url(custom_connection["base_url"])
+        connection_url_param = "base_url"
 
     # Bundle-contributed provider: apply its declared connection variables
     # (e.g. an OpenAI-compatible base_url) generically from its metadata. Runs
@@ -985,6 +1055,22 @@ def get_embeddings(
     if not isinstance(provider, str) or not provider.strip():
         msg = "The selected embedding model is missing a provider"
         raise ValueError(msg)
+
+    # Custom suppliers are user-owned endpoints resolving their own connection
+    # (stored row, not global variables) and bypass the install provider ceiling.
+    custom_connection: dict[str, Any] | None = None
+    is_custom_provider = False
+    if user_id:
+        try:
+            from langflow.services.database.models.custom_provider.service import get_custom_provider_connection
+
+            connection = get_custom_provider_connection(user_id, provider)
+            if connection is not None:
+                custom_connection = connection
+                is_custom_provider = True
+        except Exception:  # noqa: BLE001 -- lfx runs without the backend in some distributions
+            custom_connection = None
+
     if provider_policy is None:
         from lfx.base.models.provider_registry import get_registry_snapshot
         from lfx.services.model_provider_policy import ModelProviderPolicyPurpose, resolve_model_provider_policy
@@ -994,16 +1080,21 @@ def get_embeddings(
             providers=(*get_registry_snapshot().provider_ids, provider),
             purpose=ModelProviderPolicyPurpose.USE,
         )
-    provider_policy.require(provider)
-    if isinstance(model_name, str) and model_name:
-        provider_policy.require_model(provider, model_name, model_type="embeddings")
+    if not is_custom_provider:
+        provider_policy.require(provider)
+        if isinstance(model_name, str) and model_name:
+            provider_policy.require_model(provider, model_name, model_type="embeddings")
 
     # Resolve helpers through the patchable package namespace only after the
     # provider has been authorized for runtime use.
     from lfx.base.models import unified_models as unified_models_module
     from lfx.base.models.provider_registry import provider_name_for_id, resolve_provider_id
 
-    provider_id = resolve_provider_id(provider)
+    try:
+        provider_id = resolve_provider_id(provider)
+    except ValueError:
+        # Custom supplier ids are already stable runtime ids, not registry names.
+        provider_id = provider
     canonical_provider = provider_name_for_id(provider_id)
     provider_is_known = canonical_provider is not None
     provider = canonical_provider or provider
@@ -1012,7 +1103,9 @@ def get_embeddings(
     api_key = unified_models_module.get_api_key_for_provider(user_id, provider, api_key)
     from lfx.base.models.provider_registry import is_api_key_optional
 
-    if not api_key and provider != "Ollama" and not is_api_key_optional(provider):
+    if not api_key and is_custom_provider and custom_connection:
+        api_key = custom_connection.get("api_key")
+    if not api_key and provider != "Ollama" and not is_api_key_optional(provider) and not is_custom_provider:
         provider_variable_map = unified_models_module.get_model_provider_variable_mapping()
         variable_name = provider_variable_map.get(provider, f"{provider.upper().replace(' ', '_')}_API_KEY")
         msg = (

@@ -21,6 +21,7 @@ from .auth import (
     is_sso_client_secret_envelope,
 )
 from .catalog_policy import CatalogPolicyMode, CatalogPolicyRule, CatalogPolicyScope, CatalogResourceKind
+from .custom_provider import CustomProvider, CustomProviderRead
 from .deployment import Deployment
 from .deployment_provider_account import DeploymentProviderAccount
 from .file import File
@@ -57,6 +58,8 @@ __all__ = [
     "CatalogPolicyRule",
     "CatalogPolicyScope",
     "CatalogResourceKind",
+    "CustomProvider",
+    "CustomProviderRead",
     "Deployment",
     "DeploymentProviderAccount",
     "ExecutionSignal",

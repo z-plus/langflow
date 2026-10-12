@@ -26,6 +26,23 @@ from lfx.utils.constants import MESSAGE_SENDER_AI
 DETAILED_THINKING_PREFIX = "detailed thinking on\n\n"
 
 
+# Reasoning/thinking content blocks returned by mainstream and third-party
+# OpenAI-compatible servers belong in the response trace, not in Message.text.
+# Tolerated shapes: {"type": "reasoning_content", ...},
+# {"type": "thinking", "thinking": ...}, and dicts carrying
+# ``reasoning_content`` / ``thinking`` keys next to the actual text.
+_REASONING_BLOCK_TYPES = frozenset({"reasoning", "thinking", "reasoning_content", "reasoned_content", "thought"})
+
+
+def _plain_text_from_dict(content: dict[str, Any]) -> str | None:
+    """Return the first plain-text payload of a content dict, if any."""
+    for key in ("text", "content", "message", "response"):
+        value = content.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def _normalize_message_content(content: Any) -> Any:
     """Flatten LangChain content blocks into a plain string.
 
@@ -33,19 +50,32 @@ def _normalize_message_content(content: Any) -> Any:
     as a list of content blocks such as
     ``[{"type": "text", "text": "...", "thought_signature": "..."}]`` instead of a
     plain string. Join the ``text`` blocks and drop non-text blocks so the result
-    can populate ``Message.text``. Non-list inputs are returned unchanged.
+    can populate ``Message.text``. Reasoning/thinking blocks from third-party
+    OpenAI-compatible providers are tolerated (dropped, never merged into the
+    visible text). Non-list inputs are returned unchanged.
     """
-    if not isinstance(content, list):
-        return content
-    parts: list[str] = []
-    for block in content:
-        if isinstance(block, str):
-            parts.append(block)
-        elif isinstance(block, dict) and block.get("type") == "text":
-            text = block.get("text")
-            if isinstance(text, str):
-                parts.append(text)
-    return "".join(parts)
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                block_type = block.get("type")
+                if isinstance(block_type, str) and block_type.casefold() in _REASONING_BLOCK_TYPES:
+                    continue
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                elif "text" not in block and not block_type:
+                    nested = _plain_text_from_dict(block)
+                    if nested is not None:
+                        parts.append(nested)
+        return "".join(parts)
+    if isinstance(content, dict):
+        # Some third-party servers emit a dict rather than a list of blocks,
+        # e.g. {"content": "...", "reasoning_content": "..."} -- take the text.
+        return _plain_text_from_dict(content) or content
+    return content
 
 
 class LCModelComponent(Component):

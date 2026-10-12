@@ -456,8 +456,24 @@ async def _fetch_enabled_providers_for_user(
         for provider, variable in provider_candidates.items()
         if configuration_policy.allows(provider) and (provider_policy is None or provider_policy.allows(provider))
     }
+
+    # User-defined custom suppliers (custom_provider rows) are configured by
+    # definition -- the row holds the credentials -- so expose them as enabled
+    # for their owner regardless of the install provider ceiling. Best-effort:
+    # lfx-only distributions have no backend tables and fall back to the
+    # built-in result.
+    custom_provider_ids: set[str] = set()
+    try:
+        from langflow.services.database.models.custom_provider.crud import list_providers
+
+        user_id_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
+        async with session_scope() as session:
+            custom_provider_ids = {row.provider_id for row in await list_providers(session, user_id=user_id_uuid)}
+    except Exception:  # noqa: BLE001 -- lfx runs without the backend in some distributions
+        custom_provider_ids = set()
+
     if not provider_candidates:
-        return set()
+        return custom_provider_ids
 
     async with session_scope() as session:
         # Get all variable names (VariableRead has value=None for credentials)
@@ -499,7 +515,9 @@ async def _fetch_enabled_providers_for_user(
                     continue
 
         # Use shared helper to validate and get enabled providers
-        return _validate_and_get_enabled_providers(all_provider_variables, provider_candidates)
+        enabled = _validate_and_get_enabled_providers(all_provider_variables, provider_candidates)
+        enabled.update(custom_provider_ids)
+        return enabled
 
 
 def validate_model_provider_key(provider: str, variables: dict[str, str], model_name: str | None = None) -> None:

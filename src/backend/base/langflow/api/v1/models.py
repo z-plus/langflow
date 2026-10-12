@@ -42,6 +42,10 @@ from langflow.api.v1.model_provider_policy_scope import (
     ProviderPolicyAttributesDependency,
 )
 from langflow.services.authorization import VariableAction, ensure_variable_permission
+from langflow.services.database.models.custom_provider.service import (
+    build_catalog_entries,
+    get_custom_provider_ids,
+)
 from langflow.services.deps import get_settings_service, get_variable_service
 from langflow.services.variable.constants import GENERIC_TYPE
 from langflow.services.variable.service import DatabaseVariableService
@@ -309,6 +313,14 @@ async def list_models(
         attributes=provider_policy_attributes,
     )
     selected_providers: list[str] | None = provider_policy.filter(provider) if provider is not None else None
+    # Custom suppliers are user-owned (not install providers), so they bypass
+    # the model-provider policy filter; keep any requested custom ids so
+    # pickers can query/filter them and saved flows resolve their models.
+    if provider is not None:
+        custom_ids = await get_custom_provider_ids(session, user_id=current_user.id)
+        custom_requested = [pid for pid in provider if pid in custom_ids]
+        if custom_requested:
+            selected_providers = [*(selected_providers or []), *custom_requested]
     if provider is not None and not selected_providers:
         return []
     configuration_policy = await _aresolve_read_policy(
@@ -420,6 +432,21 @@ async def list_models(
         provider_data for provider_data in filtered_models if provider_policy.allows(provider_data.get("provider", ""))
     ]
 
+    # Merge the user's custom suppliers into the catalog. They carry concrete
+    # models, so they participate in every query mode (unlike the live-only
+    # union above). Mark each as configured + enabled so the status loop below
+    # reports them exactly like other providers.
+    custom_entries = await build_catalog_entries(session, user_id=current_user.id)
+    custom_provider_ids: list[str] = []
+    for custom_entry in custom_entries:
+        pid = custom_entry["provider"]
+        custom_provider_ids.append(pid)
+        if selected_providers and pid not in selected_providers:
+            continue
+        filtered_models.append(custom_entry)
+        provider_configured_status[pid] = True
+        enabled_models_map.setdefault(pid, {}).update({m["model_name"]: True for m in custom_entry["models"]})
+
     # replace_with_live_models iterates every live-capable provider regardless of
     # the ?provider= filter, so it can append providers the caller excluded (e.g.
     # a configured OpenRouter appearing in a ?provider=OpenAI response). Re-apply
@@ -431,6 +458,7 @@ async def list_models(
     # once credentials are configured. The UI uses this to explain an empty
     # (or seed-only) catalog instead of presenting it as "no models exist".
     live_discovery_providers = set(LIVE_MODEL_PROVIDERS) | set(get_live_only_providers())
+    live_discovery_providers.update(custom_provider_ids)
 
     for provider_dict in filtered_models:
         prov_name = provider_dict.get("provider")
@@ -549,6 +577,13 @@ async def _get_enabled_providers_result(
             provider_status[provider] = all_required_present
             if all_required_present:
                 enabled_providers.append(provider)
+
+        # User-defined custom suppliers are configured by definition (their row
+        # holds the credentials); expose them as enabled for their owner.
+        for pid in await get_custom_provider_ids(session, user_id=current_user.id):
+            provider_status[pid] = True
+            if pid not in enabled_providers:
+                enabled_providers.append(pid)
 
         result = {
             "enabled_providers": enabled_providers,

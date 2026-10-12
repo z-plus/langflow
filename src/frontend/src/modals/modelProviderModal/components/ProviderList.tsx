@@ -46,7 +46,10 @@ const ProviderList = ({
       providerName.toLowerCase().includes(trimmedQuery);
 
     return rawProviders
-      .filter((provider) => matchesQuery(provider.provider))
+      .filter((provider) => {
+        const name = provider.display_name || provider.provider;
+        return matchesQuery(name);
+      })
       .map((provider) => {
         const matchingModels =
           provider?.models?.filter((model) =>
@@ -64,6 +67,10 @@ const ProviderList = ({
           models: matchingModels,
           api_docs_url: provider.api_docs_url,
           live_discovery: provider.live_discovery,
+          custom: provider.custom,
+          display_name: provider.display_name,
+          has_api_key: provider.has_api_key,
+          validation_status: provider.validation_status,
         };
       });
   }, [rawProviders, modelType, trimmedQuery]);

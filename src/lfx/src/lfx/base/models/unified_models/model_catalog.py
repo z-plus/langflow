@@ -299,6 +299,19 @@ def get_language_model_options(
 
             options.append(option)
 
+    # User-defined custom suppliers (owner-scoped, enabled by default, not gated
+    # by the install provider ceiling). Best-effort: no-op when the backend is
+    # absent or the user has no suppliers.
+    if user_id:
+        options.extend(
+            _custom_supplier_options(
+                user_id,
+                model_type="llm",
+                metadata_filters=metadata_filters or None,
+                disabled_models=disabled_models,
+            )
+        )
+
     return options
 
 
@@ -424,6 +437,18 @@ def get_embedding_model_options(
 
             options.append(option)
 
+    # User-defined custom suppliers (enabled by default for their owner; parsed
+    # from the same custom_provider rows as the LLM picker).
+    if user_id:
+        options.extend(
+            _custom_supplier_options(
+                user_id,
+                model_type="embeddings",
+                metadata_filters=None,
+                disabled_models=disabled_models,
+            )
+        )
+
     return options
 
 
@@ -514,3 +539,82 @@ def normalize_model_names_to_dicts(
             )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Custom (user-defined) provider suppliers
+# ---------------------------------------------------------------------------
+
+
+def _custom_supplier_entries(user_id: UUID | str | None) -> tuple[list[dict[str, Any]], set[str]]:
+    """Return ``(entries, provider_ids)`` for the user's custom suppliers.
+
+    Best-effort: lfx-only distributions have no backend tables; callers already
+    wrap model options retrieval in ``contextlib.suppress``.
+    """
+    if not user_id:
+        return [], set()
+    try:
+        from langflow.services.database.models.custom_provider.service import build_catalog_entries_for_user
+
+        entries = run_until_complete(build_catalog_entries_for_user(user_id))
+    except Exception:  # noqa: BLE001 -- lfx runs without the backend in some distributions
+        return [], set()
+    return entries, {e.get("provider") for e in entries}
+
+
+def _custom_supplier_options(
+    user_id: UUID | str | None,
+    *,
+    model_type: str,
+    metadata_filters: dict[str, Any] | None = None,
+    disabled_models: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Build picker options for custom suppliers (enabled by default).
+
+    Mirrors the option-dict shape the main catalog loops produce, but skips the
+    install-provider ceiling and the explicit-enable gate (custom models are
+    enabled for their owner by default). Disabled-model status still applies.
+    """
+    disabled_models = disabled_models or set()
+    options: list[dict[str, Any]] = []
+    entries, _ = _custom_supplier_entries(user_id)
+    for entry in entries:
+        provider = entry.get("provider")
+        icon = entry.get("icon") or "Plug"
+        for model_data in entry.get("models", []):
+            model_name = model_data.get("model_name")
+            metadata = model_data.get("metadata", {})
+            row_model_type = metadata.get("model_type") or model_type
+            if row_model_type != model_type:
+                continue
+            if metadata_filters and not all(metadata.get(key) == value for key, value in metadata_filters.items()):
+                continue
+            if model_status_contains(disabled_models, provider, model_name, model_type=row_model_type):
+                continue
+            if model_type == "llm":
+                option_metadata: dict[str, Any] = {
+                    "context_length": 128000,
+                    "model_class": "ChatOpenAI",
+                    "model_name_param": "model",
+                    "api_key_param": "api_key",
+                }
+                if metadata.get("reasoning"):
+                    option_metadata["reasoning"] = True
+                    option_metadata["reasoning_models"] = [model_name]
+            else:
+                option_metadata = {
+                    "embedding_class": EMBEDDING_PROVIDER_CLASS_MAPPING.get(provider, "OpenAIEmbeddings"),
+                    "param_mapping": EMBEDDING_PARAM_MAPPINGS.get(provider, EMBEDDING_PARAM_MAPPINGS["OpenAI"]),
+                    "model_type": "embeddings",
+                }
+            options.append(
+                {
+                    "name": model_name,
+                    "icon": icon,
+                    "category": provider,
+                    "provider": provider,
+                    "metadata": option_metadata,
+                }
+            )
+    return options

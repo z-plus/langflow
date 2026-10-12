@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { ForwardedIconComponent } from "@/components/common/genericIconComponent";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/utils/utils";
@@ -16,9 +17,11 @@ const ProviderListItem = ({
   onSelect,
   showIcon,
 }: ProviderListItemProps) => {
+  const { t } = useTranslation();
   const isEnabled = provider.is_enabled;
   const isConfigured = provider.is_configured;
   const isActive = isEnabled || isConfigured;
+  const label = provider.display_name || provider.provider;
 
   return (
     <button
@@ -46,8 +49,18 @@ const ProviderListItem = ({
               !isActive && "text-muted-foreground",
             )}
           >
-            {provider.provider}
+            {label}
           </span>
+          {provider.custom && (
+            <Badge
+              variant="outline"
+              size="sq"
+              className="text-xs whitespace-nowrap text-primary"
+              data-testid={`provider-custom-tag-${provider.provider}`}
+            >
+              {t("customProviders.customTag")}
+            </Badge>
+          )}
           {provider.model_count !== undefined && isActive && (
             <Badge
               variant={isSelected ? "secondary" : "secondaryStatic"}

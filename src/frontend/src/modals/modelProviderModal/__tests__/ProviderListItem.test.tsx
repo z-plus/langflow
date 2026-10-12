@@ -172,4 +172,39 @@ describe("ProviderListItem", () => {
       expect(item).toHaveClass("cursor-pointer");
     });
   });
+
+  describe("Custom Supplier Tag", () => {
+    const customProvider: Provider = {
+      provider: "mygateway",
+      icon: "Plug",
+      is_enabled: true,
+      is_configured: true,
+      custom: true,
+      display_name: "My Gateway",
+      has_api_key: true,
+      validation_status: "valid",
+      model_count: 2,
+      models: [],
+    };
+
+    it("shows the display_name and renders the 自定义 tag for custom suppliers", () => {
+      render(
+        <ProviderListItem {...defaultProps} provider={customProvider} />,
+      );
+
+      expect(
+        screen.getByTestId("provider-custom-tag-mygateway"),
+      ).toBeInTheDocument();
+      const item = screen.getByTestId("provider-item-mygateway");
+      expect(item).toHaveTextContent("My Gateway");
+    });
+
+    it("does not render the custom tag for built-in providers", () => {
+      render(<ProviderListItem {...defaultProps} />);
+
+      expect(
+        screen.queryByTestId("provider-custom-tag-OpenAI"),
+      ).not.toBeInTheDocument();
+    });
+  });
 });

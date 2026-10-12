@@ -16,6 +16,7 @@ from langflow.api.v1 import (
     authz_teams_router,
     catalog_policy_router,
     chat_router,
+    custom_providers_router,
     endpoints_router,
     extensions_router,
     files_router,
@@ -95,6 +96,7 @@ router_v1.include_router(mcp_projects_router)
 router_v1.include_router(a2a_router)
 router_v1.include_router(openai_responses_router)
 router_v1.include_router(models_router)
+router_v1.include_router(custom_providers_router)
 router_v1.include_router(model_options_router)
 router_v1.include_router(model_provider_policy_router)
 router_v1.include_router(policy_bundle_router)

@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import ForwardedIconComponent from "@/components/common/genericIconComponent";
 import ModelProvidersContent from "@/modals/modelProviderModal/components/ModelProvidersContent";
+import CustomProvidersSection from "./components/CustomProvidersSection";
 
 export default function ModelProvidersPage() {
   const { t } = useTranslation();
@@ -23,6 +24,7 @@ export default function ModelProvidersPage() {
           </p>
         </div>
       </div>
+      <CustomProvidersSection />
       <div className="flex w-full h-[calc(100vh-305px)] border rounded-lg overflow-hidden">
         <ModelProvidersContent modelType="all" />
       </div>
